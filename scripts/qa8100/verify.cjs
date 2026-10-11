@@ -13,6 +13,7 @@ const results = [];
       for (const variant of ['before', 'after']) {
         const context = await browser.newContext({ viewport, locale: 'en-US' });
         const page = await context.newPage();
+        page.setDefaultTimeout(15000);
         const errors = [];
         page.on('pageerror', error => errors.push(error.message));
         await page.goto(`${origin}/qa8100${variant === 'before' ? '-before' : ''}.html`);
@@ -40,7 +41,10 @@ const results = [];
               const hit = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
               return { label, rect: b, overlap: p.left < b.right && p.right > b.left && p.top < b.bottom && p.bottom > b.top, clickable: button.contains(hit) };
             });
-            return { panel: p, position: getComputedStyle(panel).position, actions };
+            const inputRect = rect(input);
+            const close = rect(buttons.find(button => button.getAttribute('aria-label') === 'Close provider search'));
+            const inputHit = document.elementFromPoint(inputRect.left + 24, inputRect.top + inputRect.height / 2);
+            return { panel: p, input: inputRect, close, inputClickable: inputHit === input, position: getComputedStyle(panel).position, actions };
           });
           results.push({ viewport, variant, search, geometry });
           await page.screenshot({ path: path.join(output, `${variant}-${viewport.width}-${search}.png`) });
@@ -50,6 +54,8 @@ const results = [];
           } else {
             assert(geometry.actions.every(action => !action.overlap && action.clickable), 'Search must not cover card actions');
             assert(geometry.panel.left >= 0 && geometry.panel.right <= viewport.width, 'Panel must fit viewport');
+            assert(geometry.input.width >= 200 && geometry.input.right <= geometry.close.left, 'Search input must retain usable width beside the close button');
+            assert(geometry.inputClickable, 'Search input must remain directly clickable');
             await edit.click();
             assert.equal(await page.locator('body').getAttribute('data-edited'), '0');
             await page.getByRole('button', { name: 'More actions for My Alpha', exact: true }).click();
