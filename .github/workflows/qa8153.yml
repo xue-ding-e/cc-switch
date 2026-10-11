@@ -24,20 +24,20 @@ jobs:
       CARGO_BUILD_JOBS: "2"
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
-      CC_SWITCH_TEST_HOME: ${{ runner.temp }}/ccswitch-8153-test-home
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 3
 
       - name: Verify product commit and isolated workflow-only QA delta
         shell: bash
         run: |
-          test "$(git rev-parse HEAD^)" = "06ad3e2e343f08e1153349695d155d7e08dad119"
-          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/qa8153.yml"
-          echo "Product commit: $(git rev-parse HEAD^)"
+          product=06ad3e2e343f08e1153349695d155d7e08dad119
+          git merge-base --is-ancestor "$product" HEAD
+          test "$(git diff --name-only "$product" HEAD)" = ".github/workflows/qa8153.yml"
+          echo "Product commit: $product"
           echo "QA commit: $(git rev-parse HEAD)"
 
       - name: Read pinned Rust toolchain
@@ -74,7 +74,9 @@ jobs:
 
       - name: Create isolated test home and frontend dist placeholder
         shell: bash
-        run: mkdir -p dist "$CC_SWITCH_TEST_HOME"
+        run: |
+          mkdir -p dist "$RUNNER_TEMP/ccswitch-8153-test-home"
+          echo "CC_SWITCH_TEST_HOME=$RUNNER_TEMP/ccswitch-8153-test-home" >> "$GITHUB_ENV"
 
       - name: Check Rust formatting
         run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
