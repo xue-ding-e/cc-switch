@@ -446,7 +446,7 @@ pub fn mirror_proxy_flag(
     app: &str,
     proxy: bool,
 ) -> Result<(), AppError> {
-    let (enabled, auto_failover) = db.get_proxy_flags_sync(app);
+    let (enabled, auto_failover) = db.get_proxy_flags_sync(app)?;
     if enabled == proxy {
         return Ok(());
     }

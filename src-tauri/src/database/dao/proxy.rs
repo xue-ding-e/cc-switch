@@ -435,15 +435,16 @@ impl Database {
     /// 同步版本：检查是否有任一 app 的 enabled = true
     ///
     /// 用于 `ProfileService::apply` 等 sync 路径判断是否需要停止代理服务。
-    pub fn is_live_takeover_active_sync(&self) -> bool {
+    pub fn is_live_takeover_active_sync(&self) -> Result<bool, AppError> {
         let conn = lock_conn!(self.conn);
-        conn.query_row(
-            "SELECT COUNT(*) FROM proxy_config WHERE enabled = 1",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap_or(0)
-            > 0
+        Ok(conn
+            .query_row(
+                "SELECT COUNT(*) FROM proxy_config WHERE enabled = 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0)
     }
 
     // ==================== Provider Health ====================
@@ -784,29 +785,31 @@ impl Database {
     /// 返回 (enabled, auto_failover_enabled)
     /// 同步读代理的监听地址和端口（读不到时用默认值）。给直连切换生成 Codex 休眠表的
     /// 本地地址用，不需要代理在运行。
-    pub fn get_proxy_listen_sync(&self) -> (String, u16) {
+    pub fn get_proxy_listen_sync(&self) -> Result<(String, u16), AppError> {
         let fallback = || {
             let defaults = crate::proxy::types::ProxyConfig::default();
             (defaults.listen_address, defaults.listen_port)
         };
         let conn = lock_conn!(self.conn);
-        conn.query_row(
-            "SELECT listen_address, listen_port FROM proxy_config WHERE app_type = 'claude'",
-            [],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)? as u16)),
-        )
-        .unwrap_or_else(|_| fallback())
+        Ok(conn
+            .query_row(
+                "SELECT listen_address, listen_port FROM proxy_config WHERE app_type = 'claude'",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)? as u16)),
+            )
+            .unwrap_or_else(|_| fallback()))
     }
 
-    pub fn get_proxy_flags_sync(&self, app_type: &str) -> (bool, bool) {
+    pub fn get_proxy_flags_sync(&self, app_type: &str) -> Result<(bool, bool), AppError> {
         let conn = lock_conn!(self.conn);
 
-        conn.query_row(
-            "SELECT enabled, auto_failover_enabled FROM proxy_config WHERE app_type = ?1",
-            [app_type],
-            |row| Ok((row.get::<_, i32>(0)? != 0, row.get::<_, i32>(1)? != 0)),
-        )
-        .unwrap_or((false, false))
+        Ok(conn
+            .query_row(
+                "SELECT enabled, auto_failover_enabled FROM proxy_config WHERE app_type = ?1",
+                [app_type],
+                |row| Ok((row.get::<_, i32>(0)? != 0, row.get::<_, i32>(1)? != 0)),
+            )
+            .unwrap_or((false, false)))
     }
 
     /// 同步设置应用的 proxy 启用状态和自动故障转移状态

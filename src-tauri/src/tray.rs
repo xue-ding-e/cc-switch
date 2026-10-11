@@ -1147,22 +1147,22 @@ fn provider_entry(app: &AppType, provider: &Provider) -> ProviderEntry {
     }
 }
 
-fn tray_mode(app_state: &AppState, app: &AppType) -> TrayMode {
+fn tray_mode(app_state: &AppState, app: &AppType) -> Result<TrayMode, AppError> {
     if *app == AppType::ClaudeDesktop {
-        return TrayMode::Desktop;
+        return Ok(TrayMode::Desktop);
     }
     if !crate::mode::current::is_proxy(app) {
-        return TrayMode::Direct;
+        return Ok(TrayMode::Direct);
     }
     if crate::mode::stack::stack_mode_now(app) {
-        return TrayMode::Stack;
+        return Ok(TrayMode::Stack);
     }
-    let (_, auto_failover) = app_state.db.get_proxy_flags_sync(app.as_str());
-    if auto_failover {
+    let (_, auto_failover) = app_state.db.get_proxy_flags_sync(app.as_str())?;
+    Ok(if auto_failover {
         TrayMode::Failover
     } else {
         TrayMode::Route
-    }
+    })
 }
 
 fn collect_app_snapshot(
@@ -1185,7 +1185,7 @@ fn collect_app_snapshot(
         crate::mode::current::Purpose::InUse,
     )?
     .filter(|id| rows.contains_key(id));
-    let mode = tray_mode(app_state, app);
+    let mode = tray_mode(app_state, app)?;
 
     let queue = if mode == TrayMode::Failover {
         app_state
@@ -1956,7 +1956,8 @@ fn collect_snapshots(
     let port = snapshots
         .iter()
         .any(|snapshot| snapshot.service_down)
-        .then(|| app_state.db.get_proxy_listen_sync().1);
+        .then(|| app_state.db.get_proxy_listen_sync().map(|(_, port)| port))
+        .transpose()?;
     let visible: Vec<(AppType, bool)> = snapshots
         .iter()
         .map(|snapshot| (snapshot.app.clone(), snapshot.mode == TrayMode::Direct))
@@ -2598,7 +2599,7 @@ fn handle_provider_click(
     if current.as_deref() == Some(provider_id) {
         return Ok(ClickOutcome::Unchanged);
     }
-    let mode = tray_mode(state, app_type);
+    let mode = tray_mode(state, app_type)?;
     if mode == TrayMode::Failover {
         log::info!(
             "{} 的故障转移开着，托盘只读，不切换",
@@ -2622,10 +2623,19 @@ fn handle_provider_click(
 
 fn emit_switched(app: &tauri::AppHandle, app_type: &AppType, provider_id: &str) {
     let proxy_enabled = crate::mode::current::is_proxy(app_type);
-    let auto_failover = app
+    let auto_failover = match app
         .try_state::<AppState>()
-        .map(|state| state.db.get_proxy_flags_sync(app_type.as_str()).1)
-        .unwrap_or(false);
+        .map(|state| state.db.get_proxy_flags_sync(app_type.as_str()))
+        .transpose()
+    {
+        Ok(flags) => flags
+            .map(|(_, auto_failover)| auto_failover)
+            .unwrap_or(false),
+        Err(error) => {
+            log::error!("读取代理状态失败，跳过供应商切换事件: {error}");
+            return;
+        }
+    };
     let event_data = serde_json::json!({
         "appType": app_type.as_str(),
         "proxyEnabled": proxy_enabled,

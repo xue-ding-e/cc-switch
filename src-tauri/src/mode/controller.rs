@@ -1414,7 +1414,7 @@ fn codex_official_login_now(
     }
     let live_now = LiveNow::of(state, app, &mode)?;
     let owner = live_now.codex_owner();
-    let base_url = codex_direct::configured_proxy_base_url(&state.db);
+    let base_url = codex_direct::configured_proxy_base_url(&state.db)?;
     let spec = codex_direct::Target::Proxy {
         route: &route,
         base_url: &base_url,
@@ -1516,9 +1516,9 @@ async fn startup_app(state: &AppState, app: &AppType) -> Result<(), String> {
     let had_backup = drain_legacy_backup(state, app).await;
     let mut mode = current::mode_state(app);
     // 新版自己接上时写的占位符不算遗留物（比如重启更新时没来得及分离）。
-    let placeholder = !mode.attached && state.proxy_service.live_has_proxy_placeholder(app);
+    let placeholder = !mode.attached && state.proxy_service.live_has_proxy_placeholder(app)?;
     let legacy = had_backup || placeholder;
-    let (enabled, _) = state.db.get_proxy_flags_sync(app.as_str());
+    let (enabled, _) = state.db.get_proxy_flags_sync(app.as_str())?;
     let want_proxy = if legacy {
         enabled
     } else {
@@ -2326,6 +2326,50 @@ mod mode_tests {
 
     #[tokio::test]
     #[serial]
+    async fn codex_startup_preserves_live_files_when_poison_recovery_fails() {
+        use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation};
+
+        let _home = Home::new();
+        crate::codex_config::write_codex_live_atomic(
+            &json!({ "OPENAI_API_KEY": "synthetic-test-key" }),
+            Some("model = \"gpt-5.4\"\n"),
+        )
+        .unwrap();
+        let paths = [
+            crate::codex_config::get_codex_auth_path(),
+            crate::codex_config::get_codex_config_path(),
+        ];
+        let before: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
+        let state = AppState::new(Arc::new(Database::memory().unwrap()));
+        state.db.set_proxy_flags_sync("codex", true, true).unwrap();
+        let joined = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let conn = state.db.conn.lock().unwrap();
+                    conn.execute_batch("BEGIN").unwrap();
+                    conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+                        AuthAction::Transaction {
+                            operation: TransactionOperation::Rollback,
+                        } => Authorization::Deny,
+                        _ => Authorization::Allow,
+                    }));
+                    panic!("simulated database holder panic");
+                })
+                .join()
+        });
+        assert!(joined.is_err());
+
+        let error = startup_app(&state, &AppType::Codex).await.unwrap_err();
+        assert!(error.contains("回滚"), "{error}");
+        assert!(state.db.conn.is_poisoned());
+        assert!(!state.proxy_service.is_running().await);
+        for (path, original) in paths.iter().zip(before) {
+            assert_eq!(fs::read(path).unwrap(), original, "{}", path.display());
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn entering_and_leaving_proxy_mode_only_touches_key_and_exclusive_fields() {
         let _home = Home::new();
         seed_settings(USER_SETTINGS);
@@ -2354,7 +2398,7 @@ mod mode_tests {
         assert_eq!(entered.proxy_route.as_deref(), Some("a"));
         assert!(entered.contract.is_some());
         assert!(
-            state.db.get_proxy_flags_sync("claude").0,
+            state.db.get_proxy_flags_sync("claude").unwrap().0,
             "enabled mirrors the mode"
         );
 
@@ -2370,7 +2414,7 @@ mod mode_tests {
         let left = mode(&AppType::Claude);
         assert_eq!(left.mode, Some(Mode::Direct));
         assert_eq!(left.proxy_route.as_deref(), Some("a"), "the route is kept");
-        assert!(!state.db.get_proxy_flags_sync("claude").0);
+        assert!(!state.db.get_proxy_flags_sync("claude").unwrap().0);
         assert!(!state.proxy_service.is_running().await);
     }
 
@@ -2682,7 +2726,7 @@ mod mode_tests {
             assert_eq!(recovered.attached, expect_proxy, "{point}");
             assert_eq!(live_is_proxy, expect_proxy, "{point}: file and state agree");
             assert_eq!(
-                state.db.get_proxy_flags_sync("claude").0,
+                state.db.get_proxy_flags_sync("claude").unwrap().0,
                 expect_proxy,
                 "{point}"
             );
@@ -2951,7 +2995,8 @@ mod mode_tests {
         );
         assert!(state
             .proxy_service
-            .live_has_proxy_placeholder(&AppType::Codex));
+            .live_has_proxy_placeholder(&AppType::Codex)
+            .unwrap());
         // 第三方路由留下的 custom 表改成休眠形态：指向本地代理、只有占位 Key。
         let dormant = &doc["model_providers"]["custom"];
         assert_eq!(
@@ -2970,7 +3015,8 @@ mod mode_tests {
         assert_eq!(auth(), native_auth);
         assert!(!state
             .proxy_service
-            .live_has_proxy_placeholder(&AppType::Codex));
+            .live_has_proxy_placeholder(&AppType::Codex)
+            .unwrap());
     }
 
     /// 官方做路由时会话和官方直连落在同一个桶：进出代理不换 Codex 选中的 provider id。
@@ -3046,7 +3092,8 @@ mod mode_tests {
             }
             assert!(state
                 .proxy_service
-                .live_has_proxy_placeholder(&AppType::Codex));
+                .live_has_proxy_placeholder(&AppType::Codex)
+                .unwrap());
             assert_eq!(
                 crate::config::read_json_file::<Value>(&crate::codex_config::get_codex_auth_path())
                     .unwrap(),
@@ -3059,7 +3106,8 @@ mod mode_tests {
             assert!(!restored.contains("openai_base_url"), "{restored}");
             assert!(!state
                 .proxy_service
-                .live_has_proxy_placeholder(&AppType::Codex));
+                .live_has_proxy_placeholder(&AppType::Codex)
+                .unwrap());
         }
     }
 
@@ -5975,7 +6023,8 @@ model_provider = "c"
         exit(&state, &AppType::Codex).await.expect("exit");
         assert!(!state
             .proxy_service
-            .live_has_proxy_placeholder(&AppType::Codex));
+            .live_has_proxy_placeholder(&AppType::Codex)
+            .unwrap());
     }
 
     fn set_classic_subagents(enabled: bool) {

@@ -2015,8 +2015,13 @@ fn initialize_common_config_snippets(state: &store::AppState) {
         {
             continue;
         }
-        if state.proxy_service.live_has_proxy_placeholder(&app_type) {
-            continue;
+        match state.proxy_service.live_has_proxy_placeholder(&app_type) {
+            Ok(false) => {}
+            Ok(true) => continue,
+            Err(error) => {
+                log::error!("检测代理接管状态失败，跳过配置片段提取: {error}");
+                continue;
+            }
         }
 
         let settings = match crate::services::provider::ProviderService::read_live_settings(

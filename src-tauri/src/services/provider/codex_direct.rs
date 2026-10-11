@@ -69,25 +69,26 @@ fn managed_account(provider: &Provider) -> Option<String> {
 }
 
 /// 本地代理给 Codex 的地址（带 `/v1`），不需要代理在运行：官方直连时写休眠表用。
-pub(crate) fn configured_proxy_base_url(db: &Database) -> String {
-    let (address, port) = db.get_proxy_listen_sync();
+pub(crate) fn configured_proxy_base_url(db: &Database) -> Result<String, AppError> {
+    let (address, port) = db.get_proxy_listen_sync()?;
     let port = if port == 0 {
         crate::proxy::types::ProxyConfig::default().listen_port
     } else {
         port
     };
-    format!(
+    Ok(format!(
         "{}/v1",
         crate::services::proxy::proxy_origin(&address, port)
-    )
+    ))
 }
 
 /// `config_text` 是不是代理的官方路由（指向本地代理，但不带占位 Key）。
-pub(crate) fn routes_official_to_proxy(db: &Database, config_text: &str) -> bool {
-    let (address, port) = db.get_proxy_listen_sync();
-    crate::codex_config::codex_config_routes_official_to_proxy(config_text, |url| {
-        is_proxy_base_url(url, &address, port)
-    })
+pub(crate) fn routes_official_to_proxy(db: &Database, config_text: &str) -> Result<bool, AppError> {
+    let (address, port) = db.get_proxy_listen_sync()?;
+    Ok(crate::codex_config::codex_config_routes_official_to_proxy(
+        config_text,
+        |url| is_proxy_base_url(url, &address, port),
+    ))
 }
 
 /// `url`（去掉末尾 `/`）是不是本地代理给 Codex 的地址。端口配成 0 时代理用系统分配的
@@ -570,7 +571,7 @@ pub(crate) fn plan(
                 }
                 Route::Official => (
                     RouteWrite::Official {
-                        dormant_base_url: configured_proxy_base_url(db),
+                        dormant_base_url: configured_proxy_base_url(db)?,
                     },
                     None,
                     auth,

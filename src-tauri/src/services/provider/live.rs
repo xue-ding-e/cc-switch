@@ -1011,7 +1011,7 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
     // PROXY_MANAGED 占位符和本地代理地址，不是用户的真实配置。一旦导入，
     // 它会成为直连指针（SSOT），退出代理时会把占位符当真实配置写回 Live。
     // 典型触发场景：代理模式下切换 app_config_dir 并重启，新数据库首启导入。
-    if state.proxy_service.live_has_proxy_placeholder(&app_type) {
+    if state.proxy_service.live_has_proxy_placeholder(&app_type)? {
         return Err(AppError::localized(
             "provider.import.live_taken_over",
             "Live 配置当前处于代理接管状态（包含占位符），不能导入为供应商。请先关闭代理接管或恢复 Live 配置后重试。",

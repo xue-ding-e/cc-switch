@@ -1484,7 +1484,7 @@ fn poisoned_connection_lock_rolls_back_unfinished_transaction() {
             .expect("read after poisoning"),
         None
     );
-    assert!(lock_recovering(&db.conn).is_autocommit());
+    assert!(lock_recovering(&db.conn).unwrap().is_autocommit());
 }
 
 #[test]
@@ -1495,6 +1495,118 @@ fn proxy_sync_reads_report_stored_flags_after_poisoning() {
     poison_conn_lock(&db, |_| {});
 
     // 这几个同步读取以前在锁中毒时静默返回默认值，托盘会把接管显示成关闭。
-    assert_eq!(db.get_proxy_flags_sync("claude"), (true, true));
-    assert!(db.is_live_takeover_active_sync());
+    assert_eq!(db.get_proxy_flags_sync("claude").unwrap(), (true, true));
+    assert!(db.is_live_takeover_active_sync().unwrap());
+}
+
+#[test]
+fn poisoned_connection_rollback_failure_rejects_operations_until_recovery() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let db = Database::memory().expect("create memory db");
+    db.set_setting("committed", "before").unwrap();
+    db.set_proxy_flags_sync("claude", true, true).unwrap();
+    let rollback_attempts = Arc::new(AtomicUsize::new(0));
+    let attempts = Arc::clone(&rollback_attempts);
+    poison_conn_lock(&db, move |conn| {
+        conn.execute_batch(
+            "BEGIN; INSERT INTO settings (key, value) VALUES ('abandoned', 'x');
+             SAVEPOINT nested; INSERT INTO settings (key, value) VALUES ('nested', 'x');",
+        )
+        .unwrap();
+        // Refuse only ROLLBACK: ordinary writes would still succeed inside the abandoned transaction.
+        conn.authorizer(Some(move |context: AuthContext<'_>| match context.action {
+            AuthAction::Transaction {
+                operation: TransactionOperation::Rollback,
+            } => {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Authorization::Deny
+            }
+            _ => Authorization::Allow,
+        }));
+    });
+
+    for expected_attempts in 1..=2 {
+        let error = db
+            .set_setting("blocked", "must not be written")
+            .unwrap_err();
+        assert!(error.to_string().contains("回滚"), "{error}");
+        assert!(db.conn.is_poisoned(), "failed recovery must retain poison");
+        assert_eq!(
+            rollback_attempts.load(Ordering::SeqCst),
+            expected_attempts,
+            "each call attempts recovery once, without an internal retry loop"
+        );
+    }
+    assert!(db.get_setting("committed").is_err());
+    assert!(db.get_proxy_flags_sync("claude").is_err());
+    assert!(db.is_live_takeover_active_sync().is_err());
+    assert!(db.get_proxy_listen_sync().is_err());
+    assert!(crate::mode::operation::mirror_proxy_flag(&db, "claude", false).is_err());
+    assert!(crate::services::provider::codex_direct::configured_proxy_base_url(&db).is_err());
+    assert!(crate::services::provider::codex_direct::routes_official_to_proxy(&db, "").is_err());
+
+    {
+        // Test-only fault removal. Production code must never bypass lock_recovering.
+        let conn = db.conn.lock().unwrap_err().into_inner();
+        assert!(!conn.is_autocommit());
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM settings WHERE key = 'blocked'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+    }
+    assert!(db.conn.is_poisoned());
+    db.set_setting("after", "committed")
+        .expect("recover and write after fault removal");
+    assert!(!db.conn.is_poisoned());
+    assert!(lock_recovering(&db.conn).unwrap().is_autocommit());
+    assert_eq!(
+        db.get_setting("committed").unwrap().as_deref(),
+        Some("before")
+    );
+    assert_eq!(db.get_setting("abandoned").unwrap(), None);
+    assert_eq!(db.get_setting("nested").unwrap(), None);
+    assert_eq!(db.get_setting("blocked").unwrap(), None);
+    // A later rollback cannot discard the write that followed successful recovery.
+    lock_recovering(&db.conn)
+        .unwrap()
+        .execute_batch("BEGIN; ROLLBACK")
+        .unwrap();
+    assert_eq!(
+        db.get_setting("after").unwrap().as_deref(),
+        Some("committed")
+    );
+    assert_eq!(db.get_proxy_flags_sync("claude").unwrap(), (true, true));
+}
+
+#[test]
+fn poisoned_log_count_cache_is_cleared_and_rebuilt() {
+    use crate::services::usage_stats::LogFilters;
+
+    let db = Database::memory().expect("create memory db");
+    let filters = LogFilters::default();
+    assert_eq!(db.get_request_logs(&filters, 0, 10).unwrap().total, 0);
+    assert!(db.log_count_cache.lock().unwrap().is_some());
+    let joined = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let _guard = db.log_count_cache.lock().unwrap();
+                panic!("simulated panic while holding the cache lock");
+            })
+            .join()
+    });
+    assert!(joined.is_err());
+    assert!(db.log_count_cache.is_poisoned());
+    assert!(lock_recovering(&db.log_count_cache).unwrap().is_none());
+    assert!(!db.log_count_cache.is_poisoned());
+    assert_eq!(db.get_request_logs(&filters, 0, 10).unwrap().total, 0);
+    assert!(db.log_count_cache.lock().unwrap().is_some());
 }

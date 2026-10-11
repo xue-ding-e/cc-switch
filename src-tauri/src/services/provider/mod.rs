@@ -2223,7 +2223,8 @@ requires_openai_auth = true
         assert!(
             state
                 .proxy_service
-                .live_has_proxy_placeholder(&AppType::Codex),
+                .live_has_proxy_placeholder(&AppType::Codex)
+                .unwrap(),
             "Codex live config should carry the proxy contract"
         );
 
@@ -3292,7 +3293,8 @@ wire_api = "responses"
                         assert!(!crate::mode::current::is_proxy(&AppType::Codex));
                         assert!(!state
                             .proxy_service
-                            .live_has_proxy_placeholder(&AppType::Codex));
+                            .live_has_proxy_placeholder(&AppType::Codex)
+                            .unwrap());
                     }
 
                     let target = managed_codex_provider(
@@ -3642,13 +3644,15 @@ wire_api = "responses"
                     crate::mode::controller::detach_all(&state).await;
                     assert!(!state
                         .proxy_service
-                        .live_has_proxy_placeholder(&AppType::Codex));
+                        .live_has_proxy_placeholder(&AppType::Codex)
+                        .unwrap());
                 } else {
                     // 崩溃：客户端仍指着代理，只是监听没了。
                     state.proxy_service.stop().await.unwrap();
                     assert!(state
                         .proxy_service
-                        .live_has_proxy_placeholder(&AppType::Codex));
+                        .live_has_proxy_placeholder(&AppType::Codex)
+                        .unwrap());
                 }
                 assert!(crate::mode::current::is_proxy(&AppType::Codex));
             });
@@ -3698,7 +3702,8 @@ wire_api = "responses"
                 assert!(!restarted.proxy_service.is_running().await);
                 assert!(!restarted
                     .proxy_service
-                    .live_has_proxy_placeholder(&AppType::Codex));
+                    .live_has_proxy_placeholder(&AppType::Codex)
+                    .unwrap());
                 assert_eq!(fs::read(&store_path).unwrap(), persisted_accounts);
                 assert_eq!(
                     read_json_file::<Value>(&crate::codex_config::get_codex_auth_path()).unwrap(),
@@ -3726,7 +3731,8 @@ wire_api = "responses"
                 );
                 assert!(restarted
                     .proxy_service
-                    .live_has_proxy_placeholder(&AppType::Codex));
+                    .live_has_proxy_placeholder(&AppType::Codex)
+                    .unwrap());
                 crate::mode::controller::exit(&restarted, &AppType::Codex)
                     .await
                     .unwrap();

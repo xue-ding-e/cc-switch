@@ -5,6 +5,7 @@
 use crate::app_config::AppType;
 use crate::config::{get_claude_settings_path, read_json_file};
 use crate::database::Database;
+use crate::error::AppError;
 use crate::provider::Provider;
 use crate::proxy::server::ProxyServer;
 use crate::proxy::switch_lock::SwitchLockManager;
@@ -270,8 +271,8 @@ impl ProxyService {
 
     /// 客户端文件里有没有接管占位符 `PROXY_MANAGED`（旧版接管的遗留物，或新版接上代理
     /// 时写的契约）。Codex 的官方路由不带占位符，按指向本地代理的地址认。
-    pub(crate) fn live_has_proxy_placeholder(&self, app_type: &AppType) -> bool {
-        match app_type {
+    pub(crate) fn live_has_proxy_placeholder(&self, app_type: &AppType) -> Result<bool, AppError> {
+        Ok(match app_type {
             AppType::Claude => match self.read_claude_live() {
                 Ok(config) => Self::is_claude_live_taken_over(&config),
                 Err(_) => false,
@@ -282,11 +283,13 @@ impl ProxyService {
                         || config
                             .get("config")
                             .and_then(|v| v.as_str())
-                            .is_some_and(|text| {
+                            .map(|text| {
                                 crate::services::provider::codex_direct::routes_official_to_proxy(
                                     &self.db, text,
                                 )
-                            }),
+                            })
+                            .transpose()?
+                            .unwrap_or(false),
                     Err(_) => false,
                 }
             }
@@ -299,7 +302,7 @@ impl ProxyService {
                 Err(_) => false,
             },
             _ => false,
-        }
+        })
     }
 
     /// 一份配置（客户端文件或供应商行）里有没有接管占位符：行里带着它的是旧版接管期间
