@@ -1,0 +1,72 @@
+name: Native Windows WSL auto-shell regression
+
+on:
+  push:
+    branches: [qa/wsl-auto-shell-native]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qa-wsl-auto-shell-native
+  cancel-in-progress: true
+
+jobs:
+  native-wsl:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify QA scope and installed virtualization features
+        shell: pwsh
+        run: |
+          $expected = '10c3ef47ad1fba636cd16345aebe9f72998d2c2f'
+          if ((git rev-parse HEAD^).Trim() -ne $expected) { throw 'Unexpected QA parent' }
+          $changed = @(git diff --name-only $expected HEAD)
+          $allowed = @('.github/workflows/qa8110.yml', '.github/qa/wsl_auto_shell.rs', '.github/qa/run_wsl_auto_shell.ps1')
+          if ($changed | Where-Object { $_ -notin $allowed }) { throw 'QA must not change product code' }
+          wsl.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'Preinstalled WSL unavailable; no host changes allowed' }
+          wsl.exe --status
+          if ($LASTEXITCODE -ne 0) { throw 'WSL status unavailable; stop before installation' }
+          $feature = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform
+          if ($feature.State -ne 'Enabled') { throw 'VirtualMachinePlatform is not already enabled; no host changes allowed' }
+
+      - name: Install official Ubuntu distribution without Windows reboot
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          wsl.exe --install --distribution Ubuntu-24.04 --web-download --no-launch
+          if ($LASTEXITCODE -ne 0) { throw 'Official distro installation failed or requires host changes; stop' }
+          $list = (wsl.exe --list --verbose | Out-String) -replace "`0", ''
+          Write-Output $list
+          if ($list -notmatch 'Ubuntu-24\.04\s+\S+\s+2') { throw 'The installed distro is not confirmed WSL2' }
+          wsl.exe -d Ubuntu-24.04 -u root --exec /bin/sh -c 'uname -a; id; test -d /proc/sys/fs/binfmt_misc'
+          if ($LASTEXITCODE -ne 0) { throw 'Real WSL2 execution unavailable; no Linux-only fallback' }
+          wsl.exe -d Ubuntu-24.04 -u root --exec /bin/sh -c 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends zsh'
+          if ($LASTEXITCODE -ne 0) { throw 'Official Ubuntu package installation failed' }
+
+      - name: Install pinned official Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed' }
+          rustup default 1.95.0
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain selection failed' }
+
+      - name: Run one baseline-red and fixed-green native regression
+        shell: pwsh
+        run: ./.github/qa/run_wsl_auto_shell.ps1
+
+      - name: Preserve isolated test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-wsl-auto-shell-evidence
+          path: qa-evidence/
+          if-no-files-found: ignore
+          retention-days: 14
