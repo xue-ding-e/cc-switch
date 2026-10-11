@@ -1,0 +1,37 @@
+name: Provider search browser regression evidence
+on:
+  push:
+    branches: [qa/provider-search-layout-browser]
+permissions:
+  contents: read
+jobs:
+  chromium-geometry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22.12.0'
+      - run: corepack enable && pnpm install --frozen-lockfile
+      - name: Install official Playwright and Chromium
+        run: |
+          npm install --prefix /tmp/qa8100-playwright playwright@1.58.2
+          /tmp/qa8100-playwright/node_modules/.bin/playwright install --with-deps chromium
+      - name: Check baseline overlap and repaired geometry
+        env:
+          PLAYWRIGHT_MODULE: /tmp/qa8100-playwright/node_modules/playwright
+          QA_OUTPUT: ${{ github.workspace }}/qa8100-results
+          BASE_REV: df40d53c
+        run: bash scripts/qa8100/run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: provider-search-browser-evidence
+          path: |
+            qa8100-results/
+            /tmp/ccswitch-8100-vite.log
+          retention-days: 14
