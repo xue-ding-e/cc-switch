@@ -1,0 +1,89 @@
+name: Skills restore recovery validation
+
+on:
+  push:
+    branches: [qa/skills-restore-recovery-8153]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qa-skills-restore-recovery-8153-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Skills recovery (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CC_SWITCH_TEST_HOME: ${{ runner.temp }}/ccswitch-8153-test-home
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Verify product commit and isolated workflow-only QA delta
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD^)" = "06ad3e2e343f08e1153349695d155d7e08dad119"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/qa8153.yml"
+          echo "Product commit: $(git rev-parse HEAD^)"
+          echo "QA commit: $(git rev-parse HEAD)"
+
+      - name: Read pinned Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: rustfmt, clippy
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev \
+            libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev \
+            || sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.0-dev
+          sudo apt-get install -y --no-install-recommends libsoup-3.0-dev \
+            || sudo apt-get install -y --no-install-recommends libsoup2.4-dev
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: backend
+
+      - name: Create isolated test home and frontend dist placeholder
+        shell: bash
+        run: mkdir -p dist "$CC_SWITCH_TEST_HOME"
+
+      - name: Check Rust formatting
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+
+      - name: Strict Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --lib --tests -- -D warnings
+
+      - name: Run archive recovery regression tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib services::webdav_sync::archive::tests -- --test-threads=1
+
+      - name: Run related sync integration tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test import_export_sync --test skill_sync -- --test-threads=1
